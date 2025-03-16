@@ -5,13 +5,13 @@ const app = express();
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 // Middleware
 const corsOptions = {
   origin: 'http://localhost:5173',
-  credentials: true, // Correct 'credentials' here instead of 'Credential'
+  credentials: true,
   optionsSuccessStatus: 200,
 };
 
@@ -97,6 +97,23 @@ async function run() {
     });
 
 
+    // manage user status role
+    app.patch('/users/:email', verifyToken, async(req,res) => {
+      const email = req.params.email;
+      const query = {email}
+      const user = await userCollection.findOne(query)
+      if(!user || user?.status === 'requested') return res.status(400).send('You have already requested, wait for the some time')
+      
+    const updateDoc = {
+      $set: {
+        status: "Requested"
+      }
+    }
+    const result = await userCollection.updateOne(updateDoc)
+    console.log(result)
+    })
+
+
     // get product
     app.get("/products", async(req,res) => {
          const result = await productCollection.find().toArray()
@@ -116,11 +133,16 @@ async function run() {
     // manage product quantity
     app.patch('/products/quantity/:id', verifyToken,async(req,res) => {
       const id = req.params.id;
-      const {quantityToUpdate} = req.body;
+      const {quantityToUpdate,status} = req.body;
       const filter = {_id: new ObjectId(id)}
       let updateDoc = {
         $inc: {quantity: -quantityToUpdate},
       }
+       if(status === 'increase'){
+        updateDoc = {
+          $inc: {quantity: quantityToUpdate},
+        }
+       }
       const result = await productCollection.updateOne(filter,updateDoc)
       res.send(result)
     })
@@ -146,33 +168,50 @@ async function run() {
       const query = {"customer.email" : email}
       const result = await orderCollection.aggregate([
         {
-          $match: query,
+          $match: query,  //match specific customer by email 
 
         },
         {
           $addFields: {
-            productId: {$toObjectId : '$productId'},
+            productId: {$toObjectId : '$productId'},  //covert productId  string field to objectId field 
           },
         },
         {
           $lookup:{
+            // go to a diffrent collection and look for data
             from: 'products',
             localField: 'productId',
             foreignField: '_id',
             as: 'products'
           },
         },
-        {$unwind: '$products'},
+        {$unwind: '$products'}, //unwind look data ,widthout return array
         {
           $addFields: {
             name: '$products.productName',
             image: '$products.image',
             category: '$products.category',
+          },
+        },
+        {
+          // remove product object property from order
+          $project: {
+            products: 0,
           }
         }
       ]).toArray()
       res.send(result)
      })
+
+    //  delete an order 
+    app.delete('/order/:id', verifyToken, async(req,res) => {
+        const id = req.params.id
+        const query = {_id: new ObjectId(id)}
+        const order = await orderCollection.findOne(query)
+        if(order.status === 'delivered') return res.status(409).send({ message:'cannot cancel once the product is delivered'})
+        const result = await orderCollection.deleteOne(query)
+        res.send(result)
+    })
 
     console.log("Successfully connected to MongoDB deployment!");
   } finally {
